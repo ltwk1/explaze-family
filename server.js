@@ -94,6 +94,12 @@ if (adminName && adminPassword) {
   }
 }
 
+const extraAdmins = (process.env.ADMIN_USERNAMES || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+const isAdminName = name => {
+  const n = String(name).toLowerCase();
+  return extraAdmins.includes(n) || n === String(adminName || '').toLowerCase();
+};
+
 app.use(helmet({ contentSecurityPolicy: false }));
 app.use(express.json({ limit: '30kb' }));
 app.use(session({
@@ -121,8 +127,9 @@ app.post('/api/register', authLimiter, (req,res) => {
   if (password.length < 10 || password.length > 72) return res.status(400).json({error:'Пароль должен содержать от 10 до 72 символов.'});
   try {
     const hash = bcrypt.hashSync(password,12);
-    const info = db.prepare('INSERT INTO users (username,password_hash) VALUES (?,?)').run(username,hash);
-    req.session.user = {id:Number(info.lastInsertRowid),role:'member'};
+    const role = isAdminName(username) ? 'admin' : 'member';
+    const info = db.prepare('INSERT INTO users (username,password_hash,role) VALUES (?,?,?)').run(username,hash,role);
+    req.session.user = {id:Number(info.lastInsertRowid),role};
     res.json({ok:true});
   } catch { res.status(409).json({error:'Такой никнейм уже занят.'}); }
 });
@@ -130,6 +137,10 @@ app.post('/api/login', authLimiter, (req,res) => {
   const username = clean(req.body.username,24);
   const row = db.prepare('SELECT * FROM users WHERE username=?').get(username);
   if (!row || !bcrypt.compareSync(String(req.body.password || ''),row.password_hash)) return res.status(401).json({error:'Неверный никнейм или пароль.'});
+  if (isAdminName(row.username) && row.role !== 'admin') {
+    db.prepare('UPDATE users SET role=? WHERE id=?').run('admin', row.id);
+    row.role = 'admin';
+  }
   req.session.regenerate(err => {
     if (err) return res.status(500).json({error:'Не удалось создать сессию.'});
     req.session.user = {id:row.id,role:row.role};
